@@ -61,13 +61,44 @@ Mean pinball loss (p10/p90): 7.50
   back as lag features. The p10/p90 heads were trained on one-step-ahead residuals, so they
   never see the error that accumulates over a 14-day recursive horizon; intervals that are
   honest at step 1 are too narrow by step 14.
-- **What I would do about it in production:** conformalize the intervals (scale p10/p90 by the
-  empirical coverage shortfall from the backtest folds), or train direct per-horizon quantile
-  models instead of recursive ones. Either way, the fix is only findable because the
-  evaluation measures coverage at the deployed horizon.
+- **What to do about it in production:** conformalize the intervals or train direct
+  per-horizon quantile models instead of recursive ones. The first option is now implemented
+  below. Either way, the fix is only findable because the evaluation measures coverage at the
+  deployed horizon.
 - **The baselines are the point.** Seasonal naive is embarrassingly strong on weekly-seasonal
   demand; any pipeline that never compares against it can ship a model that is worse than
   copying last week.
+
+## Follow-up: the conformal fix (`conformal.py`)
+
+Sequential conformalized quantile regression: for each day the conformity score is
+`max(p10 - y, y - p90)`, and the correction Q applied to fold k is the finite-sample 80%
+quantile of scores pooled from chronologically earlier folds only, so the fix never looks
+forward. Fold 1 runs raw because a deployed system spends its first cycle collecting scores.
+
+| fold | coverage raw | coverage conformal | mean width raw | mean width conformal |
+|---|---|---|---|---|
+| 1 (no calibration yet) | 54.8% | - | 50.4 | - |
+| 2 (Q=+21.2) | 62.5% | 88.1% | 41.7 | 84.1 |
+| 3 (Q=+16.0) | 58.9% | 84.5% | 55.3 | 87.3 |
+| 4 (Q=+14.9) | 57.7% | 78.0% | 49.2 | 78.9 |
+
+```
+folds 2-4 overall: raw 59.7% -> conformal 83.5%  (target 80%)
+```
+
+Three things worth noticing:
+
+- **Coverage lands where it should.** 59.7% becomes 83.5% against an 80% target, using only
+  past information at every step.
+- **The correction shrinks as evidence accumulates** (+21.2 with one calibration fold, +14.9
+  with three): early corrections are conservative because the finite-sample quantile is, and
+  they converge toward the target as the score pool grows. The slight overshoot on fold 2 is
+  that conservatism, not a bug.
+- **Honest uncertainty costs width.** Intervals roughly widen by two thirds. That is the true
+  price of 80% coverage under recursive multi-step error, and it was being hidden by the raw
+  intervals. If the width is operationally unacceptable, the model needs to improve (direct
+  per-horizon heads), not the intervals to lie.
 
 ## Design notes
 
